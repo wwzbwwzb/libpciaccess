@@ -74,7 +74,9 @@ x86_disable_io(void)
 
 #else
 
+#if  !defined(__ANDROID__)
 #error How to enable IO ports on this system?
+#endif
 
 #endif
 
