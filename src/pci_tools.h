@@ -26,7 +26,11 @@
 
 #pragma ident	"@(#)pci_tools.h	1.4	05/09/28 SMI"
 
+#ifdef __ANDROID__
+#include <sys/param.h>
+#else
 #include <sys/modctl.h>
+#endif
 
 #ifdef	__cplusplus
 extern "C" {
