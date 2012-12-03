@@ -72,7 +72,7 @@ typedef struct nexus {
     char *dev_path;
     struct nexus *next;
 #ifdef __sparc
-    struct pci_device **devlist;
+    size_t *devlist;
     volatile size_t num_allocated_elems;
     volatile size_t num_devices;
 #endif
@@ -140,7 +140,8 @@ find_nexus_for_dev(struct pci_device *dev)
 
     for (nexus = nexus_list ; nexus != NULL ; nexus = nexus->next) {
 	for (i = 0; i < nexus->num_devices; i++) {
-	    if (nexus->devlist[i] == dev)
+	    size_t dev_idx = nexus->devlist[i];
+	    if (&pci_sys->devices[dev_idx].base == dev)
 		return nexus;
 	}
     }
@@ -196,7 +197,8 @@ pci_system_solx_devfs_destroy( void )
 	    int i;
 
 	    for (i = 0; i < nexus->num_devices; i++) {
-		dev = nexus->devlist[i];
+		size_t dev_idx = nexus->devlist[i];
+		dev = &pci_sys->devices[dev_idx].base;
 		if (MAPPING_DEV_PATH(dev))
 		    di_devfs_path_free((char *) MAPPING_DEV_PATH(dev));
 	    }
@@ -383,7 +385,8 @@ probe_dev(nexus_t *nexus, pcitool_reg_t *prg_p, probe_info_t *pinfo)
 	     * function number.
 	     */
 
-	    pci_base = &pinfo->devices[pinfo->num_devices].base;
+	    size_t dev_idx = pinfo->num_devices;
+	    pci_base = &pinfo->devices[dev_idx].base;
 
 	    pci_base->domain = nexus->domain;
 	    pci_base->bus = prg_p->bus_no;
@@ -406,7 +409,7 @@ probe_dev(nexus_t *nexus, pcitool_reg_t *prg_p, probe_info_t *pinfo)
 	    pci_base->subdevice_id 	= GET_CONFIG_VAL_16(PCI_CONF_SUBSYSID);
 	    pci_base->irq		= GET_CONFIG_VAL_8(PCI_CONF_ILINE);
 
-	    pinfo->devices[pinfo->num_devices].header_type
+	    pinfo->devices[dev_idx].header_type
 					= GET_CONFIG_VAL_8(PCI_CONF_HEADER);
 
 #ifdef DEBUG
@@ -437,19 +440,19 @@ probe_dev(nexus_t *nexus, pcitool_reg_t *prg_p, probe_info_t *pinfo)
 	    }
 
 #ifdef __sparc
-	    nexus->devlist[nexus->num_devices++] = pci_base;
+	    nexus->devlist[nexus->num_devices++] = dev_idx;
 
 	    if (nexus->num_devices == nexus->num_allocated_elems) {
-		struct pci_device **new_devs;
+		size_t *new_devs;
 		size_t new_num_elems = nexus->num_allocated_elems * 2;
 
 		new_devs = realloc(nexus->devlist,
-			new_num_elems * sizeof (struct pci_device *));
+			new_num_elems * sizeof (size_t *));
 		if (new_devs == NULL)
 		    return (rval);
 		(void) memset(&new_devs[nexus->num_devices], 0,
 			nexus->num_allocated_elems *
-			sizeof (struct pci_device *));
+			sizeof (size_t *));
 		nexus->num_allocated_elems = new_num_elems;
 		nexus->devlist = new_devs;
 	    }
@@ -642,7 +645,7 @@ probe_nexus_node(di_node_t di_node, di_minor_t minor, void *arg)
 
 #ifdef __sparc
     if ((nexus->devlist = calloc(INITIAL_NUM_DEVICES,
-			sizeof (struct pci_device *))) == NULL) {
+			sizeof (size_t *))) == NULL) {
 	(void) fprintf(stderr, "Error allocating memory for nexus devlist: %s\n",
                        strerror(errno));
 	free (nexus);
@@ -768,6 +771,8 @@ pci_device_solx_devfs_probe( struct pci_device * dev )
     int i;
     int len = 0;
     uint ent = 0;
+    struct pci_device_private *priv =
+	(struct pci_device_private *) dev;
     nexus_t *nexus;
 
 #ifdef __sparc
@@ -793,9 +798,12 @@ pci_device_solx_devfs_probe( struct pci_device * dev )
     }
 
     if (args.node != DI_NODE_NIL) {
+	int *prop;
 #ifdef __sparc
 	di_minor_t minor;
 #endif
+
+	priv->is_primary = 0;
 
 #ifdef __sparc
 	if (minor = di_minor_next(args.node, DI_MINOR_NIL))
@@ -803,6 +811,12 @@ pci_device_solx_devfs_probe( struct pci_device * dev )
 	else
 	    MAPPING_DEV_PATH(dev) = NULL;
 #endif
+
+	if (di_prop_lookup_ints(DDI_DEV_T_ANY, args.node,
+				"primary-controller", &prop) >= 1) {
+	    if (prop[0])
+		priv->is_primary = 1;
+	}
 
 	/*
 	 * It will succeed for sure, because it was
@@ -823,83 +837,69 @@ pci_device_solx_devfs_probe( struct pci_device * dev )
     if (len <= 0)
 	goto cleanup;
 
-
     /*
-     * how to find the size of rom???
-     * if the device has expansion rom,
-     * it must be listed in the last
-     * cells because solaris find probe
-     * the base address from offset 0x10
-     * to 0x30h. So only check the last
-     * item.
-     */
-    reg = (pci_regspec_t *)&regbuf[len - CELL_NUMS_1275];
-    if (PCI_REG_REG_G(reg->pci_phys_hi) == PCI_CONF_ROM) {
-	/*
-	 * rom can only be 32 bits
-	 */
-	dev->rom_size = reg->pci_size_low;
-	len = len - CELL_NUMS_1275;
-    }
-    else {
-	/*
-	 * size default to 64K and base address
-	 * default to 0xC0000
-	 */
-	dev->rom_size = 0x10000;
-    }
-
-    /*
-     * Solaris has its own BAR index.
+     * Each BAR address get its own region slot in sequence.
+     * 32 bit BAR:
+     * BAR 0x10 -> slot0, BAR 0x14 -> slot1...
+     * 64 bit BAR:
+     * BAR 0x10 -> slot0, BAR 0x18 -> slot2...,
+     * slot1 is part of BAR 0x10
      * Linux give two region slot for 64 bit address.
      */
     for (i = 0; i < len; i = i + CELL_NUMS_1275) {
 
 	reg = (pci_regspec_t *)&regbuf[i];
 	ent = reg->pci_phys_hi & 0xff;
-	/*
-	 * G35 broken in BAR0
-	 */
-	ent = (ent - PCI_CONF_BASE0) >> 2;
-	if (ent >= 6) {
+
+	if (ent > PCI_CONF_ROM) {
 	    fprintf(stderr, "error ent = %d\n", ent);
 	    break;
 	}
-
 	/*
-	 * non relocatable resource is excluded
-	 * such like 0xa0000, 0x3b0. If it is met,
-	 * the loop is broken;
+	 * G35 broken in BAR0
 	 */
-	if (!PCI_REG_REG_G(reg->pci_phys_hi))
+	if (ent < PCI_CONF_BASE0) {
+	    /*
+	     * VGA resource here and ignore it
+	     */
 	    break;
-
-	if (reg->pci_phys_hi & PCI_PREFETCH_B) {
-	    dev->regions[ent].is_prefetchable = 1;
-	}
-
-
-	/*
-	 * We split the shift count 32 into two 16 to
-	 * avoid the complaining of the compiler
-	 */
-	dev->regions[ent].base_addr = reg->pci_phys_low +
-	    ((reg->pci_phys_mid << 16) << 16);
-	dev->regions[ent].size = reg->pci_size_low +
-	    ((reg->pci_size_hi << 16) << 16);
-
-	switch (reg->pci_phys_hi & PCI_REG_ADDR_M) {
-	    case PCI_ADDR_IO:
-		dev->regions[ent].is_IO = 1;
+	} else if (ent == PCI_CONF_ROM) {
+	    priv->rom_base = reg->pci_phys_low |
+		((uint64_t)reg->pci_phys_mid << 32);
+	    dev->rom_size = reg->pci_size_low;
+	} else {
+	    ent = (ent - PCI_CONF_BASE0) >> 2;
+	    /*
+	     * non relocatable resource is excluded
+	     * such like 0xa0000, 0x3b0. If it is met,
+	     * the loop is broken;
+	     */
+	    if (!PCI_REG_REG_G(reg->pci_phys_hi))
 		break;
-	    case PCI_ADDR_MEM32:
-		break;
-	    case PCI_ADDR_MEM64:
-		dev->regions[ent].is_64 = 1;
-		/*
-		 * Skip one slot for 64 bit address
-		 */
-		break;
+
+	    if (reg->pci_phys_hi & PCI_PREFETCH_B) {
+		dev->regions[ent].is_prefetchable = 1;
+	    }
+
+
+	    dev->regions[ent].base_addr = reg->pci_phys_low |
+		((uint64_t)reg->pci_phys_mid << 32);
+	    dev->regions[ent].size = reg->pci_size_low |
+		((uint64_t)reg->pci_size_hi << 32);
+
+	    switch (reg->pci_phys_hi & PCI_REG_ADDR_M) {
+		case PCI_ADDR_IO:
+		    dev->regions[ent].is_IO = 1;
+		    break;
+		case PCI_ADDR_MEM32:
+		    break;
+		case PCI_ADDR_MEM64:
+		    dev->regions[ent].is_64 = 1;
+		    /*
+		     * Skip one slot for 64 bit address
+		     */
+		    break;
+	    }
 	}
     }
 
@@ -984,15 +984,22 @@ pci_device_solx_devfs_read_rom( struct pci_device * dev, void * buffer )
     int err;
     struct pci_device_mapping prom = {
 	.base = 0xC0000,
-	.size = dev->rom_size,
+	.size = 0x10000,
 	.flags = 0
     };
+    struct pci_device_private *priv =
+	(struct pci_device_private *) dev;
+
+    if (priv->rom_base) {
+	prom.base = priv->rom_base;
+	prom.size = dev->rom_size;
+    }
 
     err = pci_device_solx_devfs_map_range(dev, &prom);
     if (err == 0) {
 	(void) bcopy(prom.memory, buffer, dev->rom_size);
 
-	if (munmap(prom.memory, dev->rom_size) == -1) {
+	if (munmap(prom.memory, prom.size) == -1) {
 	    err = errno;
 	}
     }
@@ -1128,6 +1135,15 @@ pci_device_solx_devfs_write( struct pci_device * dev, const void * data,
     return (err);
 }
 
+static int pci_device_solx_devfs_boot_vga(struct pci_device *dev)
+{
+    struct pci_device_private *priv =
+	(struct pci_device_private *) dev;
+
+    return (priv->is_primary);
+
+}
+
 static struct pci_io_handle *
 pci_device_solx_devfs_open_legacy_io(struct pci_io_handle *ret,
 				     struct pci_device *dev,
@@ -1260,6 +1276,7 @@ static const struct pci_system_methods solx_devfs_methods = {
     .write = pci_device_solx_devfs_write,
 
     .fill_capabilities = pci_fill_capabilities_generic,
+    .boot_vga = pci_device_solx_devfs_boot_vga,
 
     .open_legacy_io = pci_device_solx_devfs_open_legacy_io,
     .read32 = pci_device_solx_devfs_read32,
