@@ -1,5 +1,6 @@
 /*
  * (C) Copyright IBM Corporation 2006
+ * Copyright 2009 Red Hat, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -21,10 +22,35 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+/*
+ * Copyright (c) 2007 Paulo R. Zanoni, Tiago Vignatti
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following
+ * conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ */
 
 /**
  * \file pciaccess.h
- * 
+ *
  * \author Ian Romanick <idr@us.ibm.com>
  */
 
@@ -36,7 +62,7 @@
 #if __GNUC__ >= 3
 #define __deprecated __attribute__((deprecated))
 #else
-#define __deprecated 
+#define __deprecated
 #endif
 
 typedef uint64_t pciaddr_t;
@@ -45,6 +71,14 @@ struct pci_device;
 struct pci_device_iterator;
 struct pci_id_match;
 struct pci_slot_match;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int pci_device_has_kernel_driver(struct pci_device *dev);
+
+int pci_device_is_boot_vga(struct pci_device *dev);
 
 int pci_device_read_rom(struct pci_device *dev, void *buffer);
 
@@ -81,6 +115,8 @@ int pci_device_get_bridge_buses(struct pci_device *dev, int *primary_bus,
 
 int pci_system_init(void);
 
+void pci_system_init_dev_mem(int fd);
+
 void pci_system_cleanup(void);
 
 struct pci_device_iterator *pci_slot_match_iterator_create(
@@ -96,6 +132,8 @@ struct pci_device *pci_device_next(struct pci_device_iterator *iter);
 struct pci_device *pci_device_find_by_slot(uint32_t domain, uint32_t bus,
     uint32_t dev, uint32_t func);
 
+struct pci_device *pci_device_get_parent_bridge(struct pci_device *dev);
+
 void pci_get_strings(const struct pci_id_match *m,
     const char **device_name, const char **vendor_name,
     const char **subdevice_name, const char **subvendor_name);
@@ -103,6 +141,8 @@ const char *pci_device_get_device_name(const struct pci_device *dev);
 const char *pci_device_get_subdevice_name(const struct pci_device *dev);
 const char *pci_device_get_vendor_name(const struct pci_device *dev);
 const char *pci_device_get_subvendor_name(const struct pci_device *dev);
+
+void pci_device_enable(struct pci_device *dev);
 
 int pci_device_cfg_read    (struct pci_device *dev, void *data,
     pciaddr_t offset, pciaddr_t size, pciaddr_t *bytes_read);
@@ -123,6 +163,10 @@ int pci_device_cfg_write_u32(struct pci_device *dev, uint32_t data,
     pciaddr_t offset);
 int pci_device_cfg_write_bits(struct pci_device *dev, uint32_t mask,
     uint32_t data, pciaddr_t offset);
+
+#ifdef __cplusplus
+}
+#endif
 
 /**
  * \name Mapping flags passed to \c pci_device_map_range
@@ -149,7 +193,7 @@ int pci_device_cfg_write_bits(struct pci_device *dev, uint32_t mask,
 struct pci_id_match {
     /**
      * \name Device / vendor matching controls
-     * 
+     *
      * Control the search based on the device, vendor, subdevice, or subvendor
      * IDs.  Setting any of these fields to \c PCI_MATCH_ANY will cause the
      * field to not be used in the comparison.
@@ -164,7 +208,7 @@ struct pci_id_match {
 
     /**
      * \name Device class matching controls
-     * 
+     *
      */
     /*@{*/
     uint32_t    device_class;
@@ -217,7 +261,7 @@ struct pci_mem_region {
      * This address is really only useful to other devices in the same
      * domain.  It's probably \b not the address applications will ever
      * use.
-     * 
+     *
      * \warning
      * Most (all?) platform back-ends leave this field unset.
      */
@@ -226,7 +270,7 @@ struct pci_mem_region {
 
     /**
      * Base physical address of the region from the CPU's point of view.
-     * 
+     *
      * This address is typically passed to \c pci_device_map_range to create
      * a mapping of the region to the CPU's virtual address space.
      */
@@ -336,6 +380,11 @@ struct pci_device {
      * the \c pci_device structure.
      */
     intptr_t user_data;
+
+    /**
+      * Used by the VGA arbiter. Type of resource decoded by the device and
+      * the file descriptor (/dev/vga_arbiter). */
+    int vgaarb_rsrc;
 };
 
 
@@ -419,7 +468,7 @@ struct pci_pcmcia_bridge_info {
     uint8_t    card_bus;
     uint8_t    subordinate_bus;
     uint8_t    cardbus_latency_timer;
-    
+
     uint16_t    secondary_status;
     uint16_t    bridge_control;
 
@@ -434,5 +483,55 @@ struct pci_pcmcia_bridge_info {
     } mem[2];
 
 };
+
+
+/**
+ * VGA Arbiter definitions, functions and related.
+ */
+
+/* Legacy VGA regions */
+#define VGA_ARB_RSRC_NONE       0x00
+#define VGA_ARB_RSRC_LEGACY_IO  0x01
+#define VGA_ARB_RSRC_LEGACY_MEM 0x02
+/* Non-legacy access */
+#define VGA_ARB_RSRC_NORMAL_IO  0x04
+#define VGA_ARB_RSRC_NORMAL_MEM 0x08
+
+int  pci_device_vgaarb_init         (void);
+void pci_device_vgaarb_fini         (void);
+int  pci_device_vgaarb_set_target   (struct pci_device *dev);
+/* use the targetted device */
+int  pci_device_vgaarb_decodes      (int new_vga_rsrc);
+int  pci_device_vgaarb_lock         (void);
+int  pci_device_vgaarb_trylock      (void);
+int  pci_device_vgaarb_unlock       (void);
+/* return the current device count + resource decodes for the device */
+int pci_device_vgaarb_get_info	    (struct pci_device *dev, int *vga_count, int *rsrc_decodes);
+
+/*
+ * I/O space access.
+ */
+
+struct pci_io_handle;
+
+struct pci_io_handle *pci_device_open_io(struct pci_device *dev, pciaddr_t base,
+					 pciaddr_t size);
+struct pci_io_handle *pci_legacy_open_io(struct pci_device *dev, pciaddr_t base,
+					 pciaddr_t size);
+void pci_device_close_io(struct pci_device *dev, struct pci_io_handle *handle);
+uint32_t pci_io_read32(struct pci_io_handle *handle, uint32_t reg);
+uint16_t pci_io_read16(struct pci_io_handle *handle, uint32_t reg);
+uint8_t pci_io_read8(struct pci_io_handle *handle, uint32_t reg);
+void pci_io_write32(struct pci_io_handle *handle, uint32_t reg, uint32_t data);
+void pci_io_write16(struct pci_io_handle *handle, uint32_t reg, uint16_t data);
+void pci_io_write8(struct pci_io_handle *handle, uint32_t reg, uint8_t data);
+
+/*
+ * Legacy memory access
+ */
+
+int pci_device_map_legacy(struct pci_device *dev, pciaddr_t base,
+			  pciaddr_t size, unsigned map_flags, void **addr);
+int pci_device_unmap_legacy(struct pci_device *dev, void *addr, pciaddr_t size);
 
 #endif /* PCIACCESS_H */

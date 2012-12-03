@@ -39,7 +39,7 @@ _pci_hidden struct pci_system * pci_sys;
 
 /**
  * Initialize the PCI subsystem for access.
- * 
+ *
  * \return
  * Zero on success or an errno value on failure.  In particular, if no
  * platform-specific initializers are available, \c ENOSYS will be returned.
@@ -51,22 +51,35 @@ int
 pci_system_init( void )
 {
     int err = ENOSYS;
-    
+
 #ifdef linux
     err = pci_system_linux_sysfs_create();
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
     err = pci_system_freebsd_create();
+#elif defined(__NetBSD__)
+    err = pci_system_netbsd_create();
+#elif defined(__OpenBSD__)
+    err = pci_system_openbsd_create();
 #elif defined(__sun)
-	err = pci_system_solx_devfs_create();
+    err = pci_system_solx_devfs_create();
+#elif defined(__GNU__)
+    err = pci_system_x86_create();
 #endif
 
     return err;
 }
 
+void
+pci_system_init_dev_mem(int fd)
+{
+#ifdef __OpenBSD__
+    pci_system_openbsd_init_dev_mem(fd);
+#endif
+}
 
 /**
  * Shutdown all access to the PCI subsystem.
- * 
+ *
  * \sa pci_system_init
  */
 void
@@ -80,6 +93,7 @@ pci_system_cleanup( void )
 	return;
     }
 
+    pci_io_cleanup();
 
     if ( pci_sys->devices ) {
 	for ( i = 0 ; i < pci_sys->num_devices ; i++ ) {
@@ -89,7 +103,7 @@ pci_system_cleanup( void )
 
 	    free( (char *) pci_sys->devices[i].device_string );
 	    free( (char *) pci_sys->devices[i].agp );
-	    
+
 	    pci_sys->devices[i].device_string = NULL;
 	    pci_sys->devices[i].agp = NULL;
 
@@ -97,7 +111,7 @@ pci_system_cleanup( void )
 		(*pci_sys->methods->destroy_device)( & pci_sys->devices[i].base );
 	    }
 	}
-	
+
 	free( pci_sys->devices );
 	pci_sys->devices = NULL;
 	pci_sys->num_devices = 0;
@@ -107,7 +121,7 @@ pci_system_cleanup( void )
     if ( pci_sys->methods->destroy != NULL ) {
 	(*pci_sys->methods->destroy)();
     }
-    
+
     free( pci_sys );
     pci_sys = NULL;
 }

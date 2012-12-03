@@ -25,7 +25,7 @@
 /**
  * \file pciaccess_private.h
  * Functions and datastructures that are private to the pciaccess library.
- * 
+ *
  * \author Ian Romanick <idr@us.ibm.com>
  */
 
@@ -37,6 +37,19 @@
 # define _pci_hidden
 #endif /* GNUC >= 4 */
 
+/*
+ * O_CLOEXEC fixes an fd leak case (see 'man 2 open' for details). I don't
+ * know of any OS we support where this isn't available in a sufficiently
+ * new version, so warn unconditionally.
+ */
+#include <sys/fcntl.h>
+
+#ifndef O_CLOEXEC
+#warning O_CLOEXEC not available, please upgrade.
+#define O_CLOEXEC 0
+#endif
+
+
 struct pci_device_mapping;
 
 int pci_fill_capabilities_generic( struct pci_device * dev );
@@ -46,12 +59,12 @@ int pci_device_generic_unmap_range(struct pci_device *dev,
 struct pci_system_methods {
     void (*destroy)( void );
     void (*destroy_device)( struct pci_device * dev );
-    int (*read_rom)( struct pci_device * dev, void * buffer );    
+    int (*read_rom)( struct pci_device * dev, void * buffer );
     int (*probe)( struct pci_device * dev );
     int (*map_range)(struct pci_device *dev, struct pci_device_mapping *map);
     int (*unmap_range)(struct pci_device * dev,
 		       struct pci_device_mapping *map);
-    
+
     int (*read)(struct pci_device * dev, void * data, pciaddr_t offset,
 		pciaddr_t size, pciaddr_t * bytes_read );
 
@@ -59,6 +72,28 @@ struct pci_system_methods {
 		pciaddr_t size, pciaddr_t * bytes_written );
 
     int (*fill_capabilities)( struct pci_device * dev );
+    void (*enable)( struct pci_device *dev );
+    int (*boot_vga)( struct pci_device *dev );
+    int (*has_kernel_driver)( struct pci_device *dev );
+    struct pci_io_handle *(*open_device_io)( struct pci_io_handle *handle,
+					     struct pci_device *dev, int bar,
+					     pciaddr_t base, pciaddr_t size );
+    struct pci_io_handle *(*open_legacy_io)( struct pci_io_handle *handle,
+					     struct pci_device *dev,
+					     pciaddr_t base, pciaddr_t size );
+    void (*close_io)( struct pci_device *dev, struct pci_io_handle *handle );
+    uint32_t (*read32)( struct pci_io_handle *handle, uint32_t reg );
+    uint16_t (*read16)( struct pci_io_handle *handle, uint32_t reg );
+    uint8_t  (*read8)( struct pci_io_handle *handle, uint32_t reg );
+    void (*write32)( struct pci_io_handle *handle, uint32_t reg,
+		     uint32_t data );
+    void (*write16)( struct pci_io_handle *handle, uint32_t reg,
+		     uint16_t data );
+    void (*write8)( struct pci_io_handle *handle, uint32_t reg, uint8_t data );
+
+    int (*map_legacy)(struct pci_device *dev, pciaddr_t base, pciaddr_t size,
+		      unsigned map_flags, void **addr);
+    int (*unmap_legacy)(struct pci_device *dev, void *addr, pciaddr_t size);
 };
 
 struct pci_device_mapping {
@@ -69,10 +104,17 @@ struct pci_device_mapping {
     void *memory;
 };
 
+struct pci_io_handle {
+    pciaddr_t base;
+    pciaddr_t size;
+    void *memory;
+    int fd;
+};
+
 struct pci_device_private {
     struct pci_device  base;
     const char * device_string;
-    
+
     uint8_t header_type;
 
     /**
@@ -81,7 +123,7 @@ struct pci_device_private {
     /*@{*/
     const struct pci_agp_info * agp;   /**< AGP capability information. */
     /*@}*/
-    
+
     /**
      * Base address of the device's expansion ROM.
      */
@@ -129,9 +171,19 @@ struct pci_system {
 #ifdef HAVE_MTRR
     int mtrr_fd;
 #endif
+    int vgaarb_fd;
+    int vga_count;
+    struct pci_device *vga_target;
+    struct pci_device *vga_default_dev;
 };
 
 extern struct pci_system * pci_sys;
 
 extern int pci_system_linux_sysfs_create( void );
 extern int pci_system_freebsd_create( void );
+extern int pci_system_netbsd_create( void );
+extern int pci_system_openbsd_create( void );
+extern void pci_system_openbsd_init_dev_mem( int );
+extern int pci_system_solx_devfs_create( void );
+extern int pci_system_x86_create( void );
+extern void pci_io_cleanup( void );

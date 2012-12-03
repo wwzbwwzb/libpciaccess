@@ -50,9 +50,52 @@
 
 #define DO_MATCH(a,b)  (((a) == PCI_MATCH_ANY) || ((a) == (b)))
 
+#ifdef HAVE_ZLIB
+
+#include <zlib.h>
+typedef gzFile pci_id_file;
+
+static pci_id_file
+pci_id_file_open(void)
+{
+    pci_id_file result;
+
+    result = gzopen(PCIIDS_PATH "/pci.ids.gz", "rb");
+    if (result)
+        return result;
+
+    return gzopen(PCIIDS_PATH "/pci.ids", "rb");
+}
+
+#define pci_id_file_gets(l, s, f)	gzgets(f, l, s)
+#define pci_id_file_close(f)		gzclose(f)
+
+#else /* not zlib */
+
+typedef FILE * pci_id_file;
+
+static pci_id_file
+pci_id_file_open(void)
+{
+    pci_id_file result;
+
+#ifndef __sun
+    result = fopen(PCIIDS_PATH "/pci.ids", "re");
+    if (result)
+        return result;
+#endif
+
+    return fopen(PCIIDS_PATH "/pci.ids", "r");
+}
+
+#define pci_id_file_gets(l, s, f)	fgets(l, s, f)
+#define pci_id_file_close(f)		fclose(f)
+
+#endif
+
 /**
  * Node for sorting vendor IDs.
- * 
+ *
  * Each structure forms an internal node of an n-way tree.  Each node selects
  * \c pci_id_node::bits number of bits from the vendor ID.  Starting from the
  * root of the tree, a slice of the low-order bits of the vendor ID are
@@ -61,7 +104,7 @@
  * At the leaf nodes (i.e., the node entered when all 16 bits of the vendor ID
  * have been used), the \c pci_id_node::children is actually an array of
  * pointers to \c pci_id_leaf structures.
- * 
+ *
  * \todo
  * Determine if there is a cleaner way (in the source code) to have the
  * \c children array change type based on whether the node is internal or
@@ -80,7 +123,7 @@ struct pci_id_node {
 struct pci_id_leaf {
     uint16_t     vendor;
     const char * vendor_name;
-    
+
     size_t num_devices;
     struct pci_device_leaf * devices;
 };
@@ -96,14 +139,8 @@ struct pci_device_leaf {
 _pci_hidden struct pci_id_node * tree = NULL;
 
 /**
- * Name of the file containing the PCI ID information.
- */
-static const char pci_id_file[] = PCIIDS_PATH "/pci.ids";
-
-
-/**
  * Get a pointer to the leaf node for a vendor ID.
- * 
+ *
  * If the vendor ID does not exist in the tree, it is added.
  */
 static struct pci_id_leaf *
@@ -140,7 +177,7 @@ insert( uint16_t vendor )
 		n->children[ idx ] = child;
 	    }
 	    else {
-		struct pci_id_leaf * leaf = 
+		struct pci_id_leaf * leaf =
 		    calloc( 1, sizeof( struct pci_id_leaf ) );
 
 		leaf->vendor = vendor;
@@ -158,9 +195,9 @@ insert( uint16_t vendor )
 
 /**
  * Populate a vendor node with all the devices associated with that vendor
- * 
+ *
  * \param vend  Vendor node that is to be filled from the pci.ids file.
- * 
+ *
  * \todo
  * The parsing in this function should be more rhobust.  There are some error
  * cases (i.e., a 0-tab line followed by a 2-tab line) that aren't handled
@@ -170,10 +207,19 @@ insert( uint16_t vendor )
 static void
 populate_vendor( struct pci_id_leaf * vend, int fill_device_data )
 {
-    FILE * f = fopen( pci_id_file, "r" );
+    pci_id_file f;
     char buf[128];
     unsigned vendor = PCI_MATCH_ANY;
 
+
+    /* If the device tree for this vendor is already populated, don't do
+     * anything.  This avoids wasted processing and potential memory leaks.
+     */
+    if (vend->num_devices != 0) {
+	return;
+    }
+
+    f = pci_id_file_open();
 
     /* If the pci.ids file could not be opened, there's nothing we can do.
      */
@@ -181,17 +227,7 @@ populate_vendor( struct pci_id_leaf * vend, int fill_device_data )
 	return;
     }
 
-
-    /* If the device tree for this vendor is already populated, don't do
-     * anything.  This avoids wasted processing and potential memory leaks.
-     */
-    if (vend->num_devices != 0) {
-	fclose(f);
-	return;
-    }
-
-
-    while( fgets( buf, sizeof( buf ), f ) != NULL ) {
+    while( pci_id_file_gets( buf, sizeof( buf ), f ) != NULL ) {
 	unsigned num_tabs;
 	char * new_line;
 	size_t length;
@@ -205,14 +241,14 @@ populate_vendor( struct pci_id_leaf * vend, int fill_device_data )
 		break;
 	    }
 	}
-	
+
 	if ( !isxdigit( buf[ num_tabs + 0 ] )
 	     || !isxdigit( buf[ num_tabs + 1 ] )
 	     || !isxdigit( buf[ num_tabs + 2 ] )
 	     || !isxdigit( buf[ num_tabs + 3 ] ) ) {
 	    continue;
 	}
-	
+
 	new_line = strchr( buf, '\n' );
 	if ( new_line != NULL ) {
 	    *new_line = '\0';
@@ -245,13 +281,13 @@ populate_vendor( struct pci_id_leaf * vend, int fill_device_data )
 	    struct pci_device_leaf * d;
 	    struct pci_device_leaf * dev;
 	    struct pci_device_leaf * last_dev;
-	    
+
 
 
 	    d = realloc( vend->devices, (vend->num_devices + 1)
 			 * sizeof( struct pci_device_leaf ) );
 	    if ( d == NULL ) {
-		return;
+		goto cleanup;
 	    }
 
 	    last_dev = & d[ vend->num_devices - 1 ];
@@ -261,7 +297,7 @@ populate_vendor( struct pci_id_leaf * vend, int fill_device_data )
 
 	    if ( num_tabs == 1 ) {
 		dev->id.vendor_id = vend->vendor;
-		dev->id.device_id = (unsigned) strtoul( & buf[ num_tabs ], 
+		dev->id.device_id = (unsigned) strtoul( & buf[ num_tabs ],
 							NULL, 16 );
 		dev->id.subvendor_id = PCI_MATCH_ANY;
 		dev->id.subdevice_id = PCI_MATCH_ANY;
@@ -277,14 +313,15 @@ populate_vendor( struct pci_id_leaf * vend, int fill_device_data )
 
 		dev->id.subvendor_id= (unsigned) strtoul( & buf[ num_tabs ],
 							  NULL, 16 );
-		dev->id.subdevice_id = (unsigned) strtoul( & buf[ num_tabs + 5 ], 
+		dev->id.subdevice_id = (unsigned) strtoul( & buf[ num_tabs + 5 ],
 							   NULL, 16 );
 		dev->device_name = strdup( & buf[ num_tabs + 5 + 6 ] );
 	    }
 	}
     }
-    
-    fclose( f );
+
+  cleanup:
+    pci_id_file_close( f );
 }
 
 

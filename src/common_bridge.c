@@ -25,7 +25,7 @@
 /**
  * \file common_bridge.c
  * Support routines used to process PCI header information for bridges.
- * 
+ *
  * \author Ian Romanick <idr@us.ibm.com>
  */
 
@@ -75,7 +75,7 @@ read_bridge_info( struct pci_device_private * priv )
 
 	info = malloc(sizeof(*info));
 	if (info != NULL) {
-	    pci_device_cfg_read( (struct pci_device *) priv, buf + 0x18, 0x18, 
+	    pci_device_cfg_read( (struct pci_device *) priv, buf + 0x18, 0x18,
 				 0x40 - 0x18, & bytes );
 
 	    info->primary_bus = buf[0x18];
@@ -239,7 +239,7 @@ pci_device_get_pcmcia_bridge_info( struct pci_device * dev )
 
 /**
  * Determine the primary, secondary, and subordinate buses for a bridge
- * 
+ *
  * Determines the IDs of the primary, secondary, and subordinate buses for
  * a specified bridge.  Not all bridges directly store this information
  * (e.g., PCI-to-ISA bridges).  For those bridges, no error is returned, but
@@ -252,7 +252,7 @@ pci_device_get_pcmcia_bridge_info( struct pci_device * dev )
  * \return
  * On success, zero is returned.  If \c dev is not a bridge, \c ENODEV is
  * returned.
- * 
+ *
  * \bug
  * Host bridges are handled the same way as PCI-to-ISA bridges.  This is
  * almost certainly not correct.
@@ -265,13 +265,9 @@ pci_device_get_bridge_buses(struct pci_device * dev, int *primary_bus,
 
     /* If the device isn't a bridge, return an error.
      */
-    
+
     if (((dev->device_class >> 16) & 0x0ff) != 0x06) {
 	return ENODEV;
-    }
-
-    if (priv->bridge.pci == NULL) {
-	read_bridge_info(priv);
     }
 
     switch ((dev->device_class >> 8) & 0x0ff) {
@@ -292,17 +288,73 @@ pci_device_get_bridge_buses(struct pci_device * dev, int *primary_bus,
 	break;
 
     case 0x04:
+    if (priv->bridge.pci == NULL)
+        read_bridge_info(priv);
+    if ((priv->header_type & 0x7f) == 0x01) {
 	*primary_bus = priv->bridge.pci->primary_bus;
 	*secondary_bus = priv->bridge.pci->secondary_bus;
 	*subordinate_bus = priv->bridge.pci->subordinate_bus;
+    } else {
+	*primary_bus = dev->bus;
+	*secondary_bus = -1;
+	*subordinate_bus = -1;
+    }
 	break;
 
     case 0x07:
+    if (priv->bridge.pcmcia == NULL)
+        read_bridge_info(priv);
+    if ((priv->header_type & 0x7f) == 0x02) {
 	*primary_bus = priv->bridge.pcmcia->primary_bus;
 	*secondary_bus = priv->bridge.pcmcia->card_bus;
 	*subordinate_bus = priv->bridge.pcmcia->subordinate_bus;
+    } else {
+	*primary_bus = dev->bus;
+	*secondary_bus = -1;
+	*subordinate_bus = -1;
+    }
 	break;
     }
 
     return 0;
+}
+
+#define PCI_CLASS_BRIDGE 0x06
+#define PCI_SUBCLASS_BRIDGE_PCI 0x04
+
+struct pci_device *
+pci_device_get_parent_bridge(struct pci_device *dev)
+{
+    struct pci_id_match bridge_match = {
+        PCI_MATCH_ANY, PCI_MATCH_ANY, PCI_MATCH_ANY, PCI_MATCH_ANY,
+        (PCI_CLASS_BRIDGE << 16) | (PCI_SUBCLASS_BRIDGE_PCI << 8),
+        0
+    };
+
+    struct pci_device *bridge;
+    struct pci_device_iterator *iter;
+
+    if (dev == NULL)
+        return NULL;
+
+    iter = pci_id_match_iterator_create(& bridge_match);
+    if (iter == NULL)
+        return NULL;
+
+    while ((bridge = pci_device_next(iter)) != NULL) {
+        if (bridge->domain == dev->domain) {
+            const struct pci_bridge_info *info =
+                pci_device_get_bridge_info(bridge);
+
+            if (info != NULL) {
+                if (info->secondary_bus == dev->bus) {
+                    break;
+                }
+            }
+        }
+    }
+
+    pci_iterator_destroy(iter);
+
+    return bridge;
 }

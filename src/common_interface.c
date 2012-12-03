@@ -52,32 +52,48 @@
 #endif /* linux */
 
 #elif defined(__sun)
-#define	LETOH_16(x)	(x)
-#define	HTOLE_16(x)	(x)
-#define	LETOH_32(x)	(x)
-#define	HTOLE_32(x)	(x)
+
+#include <sys/byteorder.h>
+
+#ifdef _BIG_ENDIAN
+# define LETOH_16(x)   BSWAP_16(x)
+# define HTOLE_16(x)   BSWAP_16(x)
+# define LETOH_32(x)   BSWAP_32(x)
+# define HTOLE_32(x)   BSWAP_32(x)
+#else
+# define LETOH_16(x)   (x)
+# define HTOLE_16(x)   (x)
+# define LETOH_32(x)   (x)
+# define HTOLE_32(x)   (x)
+#endif /* Solaris */
 
 #else
 
 #include <sys/endian.h>
 
-#define LETOH_16(x)	le16toh(x)
 #define HTOLE_16(x)	htole16(x)
-#define LETOH_32(x)	le32toh(x)
 #define HTOLE_32(x)	htole32(x)
+
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__)
+#define LETOH_16(x)	le16toh(x)
+#define LETOH_32(x)	le32toh(x)
+#else
+#define LETOH_16(x)	letoh16(x)
+#define LETOH_32(x)	letoh32(x)
+#endif
 
 #endif /* others */
 
 /**
  * Read a device's expansion ROM.
- * 
+ *
  * Reads the device's expansion ROM and stores the data in the memory pointed
  * to by \c buffer.  The buffer must be at least \c pci_device::rom_size
  * bytes.
  *
  * \param dev    Device whose expansion ROM is to be read.
  * \param buffer Memory in which to store the ROM.
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  */
@@ -92,19 +108,48 @@ pci_device_read_rom( struct pci_device * dev, void * buffer )
     return (pci_sys->methods->read_rom)( dev, buffer );
 }
 
+/**
+ * Probe a PCI (VGA) device to determine if its the boot VGA device
+ *
+ * \param dev    Device whose VGA status to query
+ * \return
+ * Zero if not the boot VGA, 1 if the boot VGA.
+ */
+int
+pci_device_is_boot_vga( struct pci_device * dev )
+{
+	if (!pci_sys->methods->boot_vga)
+		return 0;
+	return pci_sys->methods->boot_vga( dev );
+}
+
+/**
+ * Probe a PCI device to determine if a kernel driver is attached.
+ *
+ * \param dev Device to query
+ * \return
+ * Zero if no driver attached, 1 if attached kernel drviver
+ */
+int
+pci_device_has_kernel_driver( struct pci_device * dev )
+{
+	if (!pci_sys->methods->has_kernel_driver)
+		return 0;
+	return pci_sys->methods->has_kernel_driver( dev );
+}
 
 /**
  * Probe a PCI device to learn information about the device.
- * 
+ *
  * Probes a PCI device to learn various information about the device.  Before
  * calling this function, the only public fields in the \c pci_device
  * structure that have valid values are \c pci_device::domain,
  * \c pci_device::bus, \c pci_device::dev, and \c pci_device::func.
- * 
+ *
  * \param dev  Device to be probed.
- * 
+ *
  * \return
- * Zero on succes or an \c errno value on failure.
+ * Zero on success or an \c errno value on failure.
  */
 int
 pci_device_probe( struct pci_device * dev )
@@ -121,14 +166,14 @@ pci_device_probe( struct pci_device * dev )
 /**
  * Map the specified BAR so that it can be accessed by the CPU.
  *
- * Maps the specified BAR for acces by the processor.  The pointer to the
+ * Maps the specified BAR for access by the processor.  The pointer to the
  * mapped region is stored in the \c pci_mem_region::memory pointer for the
  * BAR.
  *
  * \param dev          Device whose memory region is to be mapped.
  * \param region       Region, on the range [0, 5], that is to be mapped.
  * \param write_enable Map for writing (non-zero).
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  *
@@ -149,7 +194,7 @@ pci_device_map_region(struct pci_device * dev, unsigned region,
     if (dev->regions[region].memory != NULL) {
         return 0;
     }
-    
+
     return pci_device_map_range(dev, dev->regions[region].base_addr,
                                 dev->regions[region].size, map_flags,
                                 &dev->regions[region].memory);
@@ -160,7 +205,7 @@ pci_device_map_region(struct pci_device * dev, unsigned region,
  * Map the specified memory range so that it can be accessed by the CPU.
  *
  * Maps the specified memory range for access by the processor.  The pointer
- * to the mapped region is stored in \c addr.  In addtion, the
+ * to the mapped region is stored in \c addr.  In addition, the
  * \c pci_mem_region::memory pointer for the BAR will be updated.
  *
  * \param dev          Device whose memory region is to be mapped.
@@ -168,7 +213,7 @@ pci_device_map_region(struct pci_device * dev, unsigned region,
  * \param size         Size of the range to be mapped.
  * \param write_enable Map for writing (non-zero).
  * \param addr         Location to store the mapped address.
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  *
@@ -188,7 +233,7 @@ int pci_device_map_memory_range(struct pci_device *dev,
  * Map the specified memory range so that it can be accessed by the CPU.
  *
  * Maps the specified memory range for access by the processor.  The pointer
- * to the mapped region is stored in \c addr.  In addtion, the
+ * to the mapped region is stored in \c addr.  In addition, the
  * \c pci_mem_region::memory pointer for the BAR will be updated.
  *
  * \param dev          Device whose memory region is to be mapped.
@@ -196,7 +241,7 @@ int pci_device_map_memory_range(struct pci_device *dev,
  * \param size         Size of the range to be mapped.
  * \param map_flags    Flag bits controlling how the mapping is accessed.
  * \param addr         Location to store the mapped address.
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  *
@@ -272,8 +317,8 @@ pci_device_map_range(struct pci_device *dev, pciaddr_t base,
         *addr =  mappings[devp->num_mappings].memory;
         devp->num_mappings++;
     } else {
-        mappings = realloc(devp->mappings,
-                           (sizeof(devp->mappings[0]) * devp->num_mappings));
+        mappings = realloc(mappings,
+                           (sizeof(mappings[0]) * devp->num_mappings));
     }
 
     devp->mappings = mappings;
@@ -290,7 +335,7 @@ pci_device_map_range(struct pci_device *dev, pciaddr_t base,
  *
  * \param dev          Device whose memory region is to be mapped.
  * \param region       Region, on the range [0, 5], that is to be mapped.
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  *
@@ -329,7 +374,7 @@ pci_device_unmap_region( struct pci_device * dev, unsigned region )
  * \param dev          Device whose memory is to be unmapped.
  * \param memory       Pointer to the base of the mapped range.
  * \param size         Size, in bytes, of the range to be unmapped.
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  *
@@ -353,7 +398,7 @@ pci_device_unmap_memory_range(struct pci_device *dev, void *memory,
  * \param dev          Device whose memory is to be unmapped.
  * \param memory       Pointer to the base of the mapped range.
  * \param size         Size, in bytes, of the range to be unmapped.
- * 
+ *
  * \return
  * Zero on success or an \c errno value on failure.
  *
@@ -384,17 +429,17 @@ pci_device_unmap_range(struct pci_device *dev, void *memory,
         return ENOENT;
     }
 
-    
+
     err = (*pci_sys->methods->unmap_range)(dev, &devp->mappings[i]);
     if (!err) {
         const unsigned entries_to_move = (devp->num_mappings - i) - 1;
-        
+
         if (entries_to_move > 0) {
             (void) memmove(&devp->mappings[i],
                            &devp->mappings[i + 1],
                            entries_to_move * sizeof(devp->mappings[0]));
         }
-        
+
         devp->num_mappings--;
         devp->mappings = realloc(devp->mappings,
                                  (sizeof(devp->mappings[0]) * devp->num_mappings));
@@ -409,7 +454,7 @@ pci_device_unmap_range(struct pci_device *dev, void *memory,
  *
  * Reads data from the device's PCI configuration space.  As with the system
  * read command, less data may be returned, without an error, than was
- * requested.  This is particuarly the case if a non-root user tries to read
+ * requested.  This is particularly the case if a non-root user tries to read
  * beyond the first 64-bytes of configuration space.
  *
  * \param dev         Device whose PCI configuration data is to be read.
@@ -423,13 +468,13 @@ pci_device_unmap_range(struct pci_device *dev, void *memory,
  * Zero on success or an errno value on failure.
  *
  * \note
- * Data read from PCI configuartion space using this routine is \b not
+ * Data read from PCI configuration space using this routine is \b not
  * byte-swapped to the host's byte order.  PCI configuration data is always
  * stored in little-endian order, and that is what this routine returns.
  */
 int
 pci_device_cfg_read( struct pci_device * dev, void * data,
-		     pciaddr_t offset, pciaddr_t size, 
+		     pciaddr_t offset, pciaddr_t size,
 		     pciaddr_t * bytes_read )
 {
     pciaddr_t  scratch;
@@ -439,7 +484,7 @@ pci_device_cfg_read( struct pci_device * dev, void * data,
     }
 
     return pci_sys->methods->read( dev, data, offset, size,
-				   (bytes_read == NULL) 
+				   (bytes_read == NULL)
 				   ? & scratch : bytes_read );
 }
 
@@ -450,7 +495,7 @@ pci_device_cfg_read_u8( struct pci_device * dev, uint8_t * data,
 {
     pciaddr_t bytes;
     int err = pci_device_cfg_read( dev, data, offset, 1, & bytes );
-    
+
     if ( (err == 0) && (bytes != 1) ) {
 	err = ENXIO;
     }
@@ -465,7 +510,7 @@ pci_device_cfg_read_u16( struct pci_device * dev, uint16_t * data,
 {
     pciaddr_t bytes;
     int err = pci_device_cfg_read( dev, data, offset, 2, & bytes );
-    
+
     if ( (err == 0) && (bytes != 2) ) {
 	err = ENXIO;
     }
@@ -494,7 +539,7 @@ pci_device_cfg_read_u32( struct pci_device * dev, uint32_t * data,
 /**
  * Write arbitrary bytes to device's PCI config space
  *
- * Writess data to the device's PCI configuration space.  As with the system
+ * Writes data to the device's PCI configuration space.  As with the system
  * write command, less data may be written, without an error, than was
  * requested.
  *
@@ -509,14 +554,14 @@ pci_device_cfg_read_u32( struct pci_device * dev, uint32_t * data,
  * Zero on success or an errno value on failure.
  *
  * \note
- * Data written to PCI configuartion space using this routine is \b not
+ * Data written to PCI configuration space using this routine is \b not
  * byte-swapped from the host's byte order.  PCI configuration data is always
  * stored in little-endian order, so data written with this routine should be
  * put in that order in advance.
  */
 int
 pci_device_cfg_write( struct pci_device * dev, const void * data,
-		      pciaddr_t offset, pciaddr_t size, 
+		      pciaddr_t offset, pciaddr_t size,
 		      pciaddr_t * bytes_written )
 {
     pciaddr_t  scratch;
@@ -526,7 +571,7 @@ pci_device_cfg_write( struct pci_device * dev, const void * data,
     }
 
     return pci_sys->methods->write( dev, data, offset, size,
-				    (bytes_written == NULL) 
+				    (bytes_written == NULL)
 				    ? & scratch : bytes_written );
 }
 
@@ -545,7 +590,7 @@ pci_device_cfg_write_u8(struct pci_device *dev, uint8_t data,
 
     return err;
 }
-  
+
 
 int
 pci_device_cfg_write_u16(struct pci_device *dev, uint16_t data,
@@ -582,7 +627,7 @@ pci_device_cfg_write_u32(struct pci_device *dev, uint32_t data,
 
 
 int
-pci_device_cfg_write_bits( struct pci_device * dev, uint32_t mask, 
+pci_device_cfg_write_bits( struct pci_device * dev, uint32_t mask,
 			   uint32_t data, pciaddr_t offset )
 {
     uint32_t  temp;
@@ -597,4 +642,59 @@ pci_device_cfg_write_bits( struct pci_device * dev, uint32_t mask,
     }
 
     return err;
+}
+
+void
+pci_device_enable(struct pci_device *dev)
+{
+    if (dev == NULL) {
+	return;
+    }
+
+    if (pci_sys->methods->enable)
+	pci_sys->methods->enable(dev);
+}
+
+/**
+ * Map the legacy memory space for the PCI domain containing \c dev.
+ *
+ * \param dev          Device whose memory region is to be mapped.
+ * \param base         Base address of the range to be mapped.
+ * \param size         Size of the range to be mapped.
+ * \param map_flags    Flag bits controlling how the mapping is accessed.
+ * \param addr         Location to store the mapped address.
+ *
+ * \returns
+ * Zero on success or an \c errno value on failure.
+ */
+int
+pci_device_map_legacy(struct pci_device *dev, pciaddr_t base, pciaddr_t size,
+		      unsigned map_flags, void **addr)
+{
+    if (base > 0x100000 || base + size > 0x100000)
+	return EINVAL;
+
+    if (!pci_sys->methods->map_legacy)
+	return ENOSYS;
+
+    return pci_sys->methods->map_legacy(dev, base, size, map_flags, addr);
+}
+
+/**
+ * Unmap the legacy memory space for the PCI domain containing \c dev.
+ *
+ * \param dev          Device whose memory region is to be unmapped.
+ * \param addr         Location of the mapped address.
+ * \param size         Size of the range to be unmapped.
+ *
+ * \returns
+ * Zero on success or an \c errno value on failure.
+ */
+int
+pci_device_unmap_legacy(struct pci_device *dev, void *addr, pciaddr_t size)
+{
+    if (!pci_sys->methods->unmap_legacy)
+	return ENOSYS;
+
+    return pci_sys->methods->unmap_legacy(dev, addr, size);
 }
